@@ -1,0 +1,28 @@
+{
+    "ca": "/etc/sshca/ca",
+    "ssh_host_key": "/etc/sshca/ssh_host_key",
+    "user_key_path": "/etc/sshca/users",
+    "loglevel": 30,
+
+    "roles": 
+    {
+        "deploy": 
+        {
+            "users": ["user1", "user2"],
+            "valid_before": "4h"
+        },
+
+        "dev": 
+        {
+            "users": ["user2", "user3"],
+            "valid_before": "8h"
+        },
+
+        "ops":
+        {
+            "users": ["user4"],
+            "valid_before": "1d",
+            "require_host": false
+        }
+    }
+}
