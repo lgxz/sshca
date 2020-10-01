@@ -39,10 +39,13 @@ Then starts the SSH CA service by  `python3 main.py` which will listen on port 6
 
 ### Request a signed key
 `ssh ssh://user1@ca.ssh.service:65022 ops`
+
 Then copy the returned key to ~/.ssh/id_ed25519-cert.pub. 
 
 or:
+
 `scp scp://user1@ca.ssh.service:65022/ops.pub .`
+
 If 'enable_scp' is true in config.json.
 
 ## TODO
