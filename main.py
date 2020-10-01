@@ -53,6 +53,9 @@ def generate_user_cert(role, hostname, username):
     except KeyError:
         raise CertError(101, "Invalid role")
 
+    if hostname and not hostname.isalnum():
+        raise CertError(104, "Invalid hostname")
+
     if cfg.get('require_host', True) and not hostname:
         raise CertError(102, "Require hostname")
 
