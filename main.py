@@ -22,8 +22,16 @@ permissions = {
 }
 
 
+class CertError(Exception):
+    """Error types"""
+    def __init__(self, errno, msg):
+        """Init"""
+        self.errno = errno
+        self.msg = msg
+
+
 def get_user_pubkey(username):
-    """username -> keypath"""
+    """username -> public key path"""
     return os.path.join(config['user_key_path'], '%s.pub' % username)
 
 
@@ -34,8 +42,23 @@ def load_ca(path):
     return cert
 
 
-def generate_user_cert(role, hostname, username, cfg):
-    """Generate a Signed user cert"""
+def generate_user_cert(role, hostname, username):
+    """Generate a Signed user cert
+    KeyID: username
+    Serial: Current Unix Time
+    Principals: role@hostname or role
+    """
+    try:
+        cfg = config['roles'][role]
+    except KeyError:
+        raise CertError(101, "Invalid role")
+
+    if cfg.get('require_host', True) and not hostname:
+        raise CertError(102, "Require hostname")
+
+    if username not in cfg['users']:
+        raise CertError(103, "Permission denied")
+
     user_key = asyncssh.read_public_key(get_user_pubkey(username))
 
     if cfg.get('require_host', True):
@@ -53,8 +76,51 @@ def generate_user_cert(role, hostname, username, cfg):
     return cert
 
 
+class MySFTPServer(asyncssh.SFTPServer):
+    NO_SUCH_FILE = b'/N0-SuCh-Fi1e'
+
+    def __init__(self, chan):
+        root = os.path.join(config['user_cert_path'], chan.get_extra_info('username'))
+        os.makedirs(root, exist_ok=True)
+        super().__init__(chan, chroot=root)
+        self.root = root
+
+
+    def map_path(self, path):
+        """Generate user requested cert file"""
+        chan = self.channel
+        try:
+            spath = path.decode('utf-8')
+        except:
+            return self.NO_SUCH_FILE
+
+        username = chan.get_extra_info('username')
+        peername = chan.get_extra_info('remote_peername')
+        self.logger.warning('[%s/%s] NewSftp: path=[%s]', username, peername, spath)
+
+        if not spath.endswith('.pub'):
+            return self.NO_SUCH_FILE
+
+        #Path is: role-hostname.pub or role.pub
+        items = spath[:-4].split('-')
+        role = items[0]
+        hostname = items[1] if len(items) > 1 else None
+
+        try:
+            cert = generate_user_cert(role, hostname, username)
+            self.logger.warning('[%s/%s] NewCert: serial=%u, comment=%s', username, peername, cert._serial, cert.get_comment())
+        except CertError as err:
+            self.logger.error(err.msg)
+            chan.write_stderr(err.msg)
+            chan.exit(err.errno)
+    
+        opath = os.path.join(self.root, spath)
+        cert.write_certificate(opath)
+        return asyncssh.SFTPServer.map_path(self, path)
+
+
 def handle_client(process):
-    """Handle client"""
+    """Handle a SSH connect"""
     stdout, stderr, logger, command = process.stdout, process.stderr, process.logger, process.command
     username = process.get_extra_info('username')
     peername = process.get_extra_info('remote_peername')
@@ -64,33 +130,19 @@ def handle_client(process):
     if not command:
         process.exit(1)
 
+    #command is: role [hostname]
     args = process.command.split()
     role = args[0]
-    try:
-        cfg = config['roles'][role]
-    except KeyError:
-        stderr.write('Invalid command\n')
-        process.exit(2)
-
-    hostname = None
-    if cfg.get('require_host', True):
-        if len(args) == 1:
-            stderr.write('Usage: deplot|dev hostname\n')
-            process.exit(3)
-        else:
-            hostname = args[1]
-
-    if username not in cfg['users']:
-        stderr.write('permission denied\n')
-        process.exit(4)
+    hostname = args[1] if len(args) > 1 else None
 
     try:
-        cert = generate_user_cert(role, hostname, username, cfg)
-        stdout.write(cert.export_certificate().decode('utf-8'))
-        logger.warning('[%s/%s] NewCert: serial=%u, comment=%s', username, peername, cert._serial, cert.get_comment())
-    except Exception as e:
-        stderr.write(str(e))
+        cert = generate_user_cert(role, hostname, username)
+    except CertError as err:
+        stderr.write('Err: %s\n' % err.msg)
+        process.exit(err.errno)
 
+    stdout.write(cert.export_certificate().decode('utf-8'))
+    logger.warning('[%s/%s] NewCert: serial=%u, comment=%s', username, peername, cert._serial, cert.get_comment())
     process.exit(0)
 
 
@@ -99,6 +151,7 @@ class MySSHServer(asyncssh.SSHServer):
         self._conn = conn
 
     def begin_auth(self, username):
+        """Auth user by public key"""
         try:
             self._conn.set_authorized_keys(get_user_pubkey(username))
         except IOError:
@@ -108,7 +161,12 @@ class MySSHServer(asyncssh.SSHServer):
 
 
 async def start_server():
-    await asyncssh.create_server(MySSHServer, '', 65022, server_host_keys=[config['ssh_host_key']], process_factory=handle_client)
+    if config.get('enable_scp', False):
+        scp_options = {'sftp_factory': MySFTPServer, 'allow_scp': True}
+    else:
+        scp_options = {}
+
+    await asyncssh.create_server(MySSHServer, '', config.get('port', 65022), server_host_keys=[config['ssh_host_key']], process_factory=handle_client, **scp_options)
 
 
 def main(args):
@@ -117,7 +175,11 @@ def main(args):
 
     logging.basicConfig()
     config = json.load(open(args.config, 'r'))
-    asyncssh.set_log_level(config.get('loglevel', 10))
+    if args.debug:
+        asyncssh.set_debug_level(2)
+        asyncssh.set_log_level(0)
+    else:
+        asyncssh.set_log_level(config.get('loglevel', 10))
 
     ca = load_ca(config['ca'])
 

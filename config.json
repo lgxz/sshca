@@ -1,8 +1,11 @@
 {
+    "port": 65022,
     "ca": "/etc/sshca/ca",
     "ssh_host_key": "/etc/sshca/ssh_host_key",
-    "user_key_path": "/etc/sshca/users",
+    "user_key_path": "/etc/sshca/users/",
+    "user_cert_path": "/tmp/certs/",
     "loglevel": 30,
+    "enable_scp": true,
 
     "roles": 
     {
